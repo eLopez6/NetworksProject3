@@ -212,8 +212,9 @@ short getPacketType()
 
 unsigned short next_packet(struct packetInfo *pkts)
 {
+
   memset(pkts, 0x0, sizeof(struct packetInfo));
-  safeFRead(&pkts->meta, sizeof(struct packetInfo), SINGLE_OBJECT, traceFile);
+  safeFRead(&pkts->meta, sizeof(struct metaInfo), SINGLE_OBJECT, traceFile);
   pkts->meta.seconds = ntohl(pkts->meta.seconds);
   pkts->meta.microseconds = ntohl(pkts->meta.microseconds);
   pkts->meta.caplen = ntohs(pkts->meta.caplen);
@@ -230,19 +231,17 @@ unsigned short next_packet(struct packetInfo *pkts)
     return FALSE;
 
   if(pkts->meta.caplen < sizeof(struct ether_header))
-  {
-    pkts->ethh = NULL;
-    return TRUE;
-  }
-
+    return FALSE;
 
   pkts->ethh = (struct ether_header *)pkts->packet;
   pkts->ethh->ether_type = ntohs(pkts->ethh->ether_type);
 
   if(pkts->meta.caplen == sizeof(struct ether_header))
-    return TRUE;
+    return FALSE;
+
   if(pkts->ethh->ether_type != DECIMAL_IP)
-    return TRUE;
+    return FALSE;
+
 
   pkts->ipheader = (struct iphdr *)(pkts->packet + sizeof(struct ether_header));
   pkts->ip_hdr_len = pkts->ipheader->ihl * IP_WORD_SIZE;
@@ -250,15 +249,14 @@ unsigned short next_packet(struct packetInfo *pkts)
   if(pkts->meta.caplen < sizeof(struct ether_header) + pkts->ip_hdr_len)
   {
     pkts->ipheader = NULL;
-    return TRUE;
+    return FALSE;
   }
 
   pkts->ipheader->tot_len = ntohs(pkts->ipheader->tot_len);
 
   if (ntohs(pkts->ipheader->protocol == DECIMAL_UDP))
   {
-    pkts->tcpheader = NULL;
-    pkts->udpheader = (struct udphdr *)(pkts->packet + sizeof(struct ether_header) + sizeof(struct iphdr));
+    pkts->udpheader = (struct udphdr *)(pkts->packet + sizeof(struct ether_header) + pkts->ip_hdr_len);
     pkts->tcp_hdr_len = 0;
     if (pkts->meta.caplen < (sizeof(struct ether_header) + sizeof(struct iphdr) +UDP_HEADER_LENGTH))
     {
@@ -270,8 +268,14 @@ unsigned short next_packet(struct packetInfo *pkts)
 
   if (ntohs(pkts->ipheader->protocol == DECIMAL_TCP))
   {
-    pkts->udpheader = NULL;
-    pkts->tcpheader = (struct tcphdr *)(pkts->packet + sizeof(struct ether_header) + sizeof(struct iphdr));
+    pkts->tcpheader = (struct tcphdr *)(pkts->packet + sizeof(struct ether_header) + pkts->ip_hdr_len);
+
+    if (pkts->meta.caplen < (sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct tcphdr)))
+    {
+      pkts->tcpheader = NULL;
+      return TRUE;
+    }
+
     pkts->tcp_hdr_len = pkts->tcpheader->th_off * TCP_WORD_SIZE;
 
     if (pkts->meta.caplen < (sizeof(struct ether_header) + sizeof(struct iphdr) + pkts->tcp_hdr_len))
@@ -279,89 +283,11 @@ unsigned short next_packet(struct packetInfo *pkts)
       pkts->tcpheader = NULL;
       return TRUE;
     }
+
   }
 
-  return TRUE;
+  return FALSE;
 }
-
-// int transportPacketDumping()
-// {
-//   double timestamp;
-//   unsigned short packetType;
-//   int TCPPacket = 0;
-//   int UDPPacket = 0;
-//
-//   while (safeFRead(metaInfo, META_INFO_LENGTH, SINGLE_OBJECT, traceFile) >= 1)
-//   {
-//     convertToHostByteOrder();
-//     timestamp = combineSeconds();
-//
-//
-//     if (metaInfo->caplen >= ETHERNET_HEADER_LENGTH + IP_HEADER_LENGTH)
-//       packetType = getPacketType();
-//     else
-//       continue;
-//
-//     struct iphdr *ipheader = (struct iphdr *)zmalloc(IP_HEADER_LENGTH);
-//     struct tcphdr *tcpheader = (struct tcphdr *)zmalloc(TCP_HEADER_LENGTH);
-//     struct udphdr *udpheader = (struct udphdr *)zmalloc(UDP_HEADER_LENGTH);
-//
-//     if (packetType == DECIMAL_IP)
-//     {
-//       unsigned short ipheaderLength;
-//
-//       safeFRead(ipheader, IP_HEADER_LENGTH, SINGLE_OBJECT, traceFile);
-//
-//       ipheaderLength = (ipheader->ihl * IP_WORD_SIZE);
-//
-//       if (ipheaderLength - IP_HEADER_LENGTH != 0)
-//         readUnusedBytes(ipheaderLength - IP_HEADER_LENGTH);
-//
-//       if (ipheader->protocol == DECIMAL_TCP)
-//       {
-//         safeFRead(tcpheader, TCP_HEADER_LENGTH, SINGLE_OBJECT, traceFile);
-//         if ( (tcpheader->th_off * TCP_WORD_SIZE) - TCP_HEADER_LENGTH != 0)
-//           readUnusedBytes((tcpheader->th_off * TCP_WORD_SIZE) - TCP_HEADER_LENGTH);
-//         TCPPacket = TRUE;
-//       }
-//
-//       else if (ipheader->protocol == DECIMAL_UDP)
-//       {
-//         safeFRead(udpheader, UDP_HEADER_LENGTH, SINGLE_OBJECT, traceFile);
-//         UDPPacket = TRUE;
-//       }
-//       else
-//         continue;
-//     }
-//     else
-//       continue;
-//
-//     if (UDPPacket)
-//     {
-//       printf("%0.6f ", timestamp);
-//       createIP(ntohl(ipheader->saddr));
-//       printf("%u ", ntohs(udpheader->uh_sport));
-//       createIP(ntohl(ipheader->daddr));
-//       printf("%u ", ntohs(udpheader->uh_dport));
-//       printf("U ");
-//       printf("%u\n", ntohs(udpheader->uh_ulen) - UDP_HEADER_LENGTH);
-//     }
-//     else if (TCPPacket)
-//     {
-//       printf("%0.6f ", timestamp);
-//       createIP(ntohl(ipheader->saddr));
-//       printf("%u ", ntohs(tcpheader->th_sport));
-//       createIP(ntohl(ipheader->daddr));
-//       printf("%u ", ntohs(tcpheader->th_dport));
-//       printf("T ");
-//       int payload = ntohs(ipheader->tot_len) - (ipheader->ihl * IP_WORD_SIZE)
-//         - (tcpheader->th_off * TCP_WORD_SIZE);
-//       printf("%u %u %u\n", payload, ntohl(tcpheader->th_seq), ntohl(tcpheader->th_ack));
-//     }
-//
-//   }
-//   return TRUE;
-// }
 
 int next_usable_packet(struct packetInfo *pkts)
 {
@@ -383,30 +309,32 @@ int next_usable_packet(struct packetInfo *pkts)
   return FALSE;
 }
 
+
 int transportPacketDumping()
 {
   struct packetInfo packet;
-  next_usable_packet(&packet);
 
-  printf("%0.6f", packet.ts);
-
-  if (packet.tcpheader != NULL)
+  while (next_usable_packet(&packet))
   {
-    createIP(ntohl(packet.ipheader->saddr));
-    printf("%u ", ntohs(packet.tcpheader->th_sport));
-    createIP(ntohl(packet.ipheader->daddr));
-    printf("%u ", ntohs(packet.tcpheader->th_dport));
-    int payload = ntohs(packet.ipheader->tot_len) - packet.ip_hdr_len - packet.tcp_hdr_len;
-    printf("T %u %u %u\n", payload, ntohl(packet.tcpheader->th_seq), ntohl(packet.tcpheader->th_ack));
-  }
+    printf("%0.6f ", packet.ts);
+    if (packet.tcpheader != NULL)
+    {
+      createIP(ntohl(packet.ipheader->saddr));
+      printf("%u ", ntohs(packet.tcpheader->th_sport));
+      createIP(ntohl(packet.ipheader->daddr));
+      printf("%u ", ntohs(packet.tcpheader->th_dport));
+      int payload = ntohs(packet.ipheader->tot_len) - packet.ip_hdr_len - packet.tcp_hdr_len;
+      printf("T %u %u %u\n", payload, ntohl(packet.tcpheader->th_seq), ntohl(packet.tcpheader->th_ack));
+    }
 
-  if (packet.udpheader != NULL)
-  {
-    createIP(ntohl(packet.ipheader->saddr));
-    printf("%u ", ntohs(packet.udpheader->uh_sport));
-    createIP(ntohl(packet.ipheader->daddr));
-    printf("%u ", ntohs(packet.udpheader->uh_dport));
-    printf("U %u\n", ntohs(packet.udpheader->uh_ulen) - UDP_HEADER_LENGTH);
+    if (packet.udpheader != NULL)
+    {
+      createIP(ntohl(packet.ipheader->saddr));
+      printf("%u ", ntohs(packet.udpheader->uh_sport));
+      createIP(ntohl(packet.ipheader->daddr));
+      printf("%u ", ntohs(packet.udpheader->uh_dport));
+      printf("U %u\n", ntohs(packet.udpheader->uh_ulen) - UDP_HEADER_LENGTH);
+    }
   }
 
   return TRUE;
