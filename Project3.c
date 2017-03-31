@@ -61,8 +61,6 @@ struct packetInfo {
 
 static FILE *traceFile;
 static char *traceFilePath;
-static void *dummyMemory;
-static struct metaInfo *metaInfo;
 
 void *zmalloc(unsigned int size);
 void createIP(unsigned int ip);
@@ -134,8 +132,6 @@ int main(int argc, char *argv[])
     exit(EXIT_FAILURE);
   }
 
-  metaInfo = (struct metaInfo *)zmalloc(META_INFO_LENGTH);
-
   if (pflag)
     transportPacketDumping();
 
@@ -179,36 +175,6 @@ void *zmalloc(unsigned int size)
   return p;
 }
 
-/* Read a number of bytes which will not be used */
-void readUnusedBytes(unsigned int bytes)
-{
-  dummyMemory = zmalloc(bytes);
-  safeFRead(dummyMemory, bytes, SINGLE_OBJECT, traceFile);
-  free(dummyMemory);
-}
-
-void convertToHostByteOrder()
-{
-  metaInfo->seconds = ntohl(metaInfo->seconds);
-  metaInfo->microseconds = ntohl(metaInfo->microseconds);
-  metaInfo->caplen = ntohs(metaInfo->caplen);
-}
-
-double combineSeconds()
-{
-    return (double)metaInfo->seconds +
-      ((double)metaInfo->microseconds / MICROSECONDS_PER_SECOND);
-}
-
-short getPacketType()
-{
-  unsigned short packetType;
-  readUnusedBytes(BOTH_ADDRESSES);    // the MAC addresses
-
-  safeFRead(&packetType, sizeof(short), SINGLE_OBJECT, traceFile);
-  packetType = ntohs(packetType);
-  return packetType;
-}
 
 unsigned short next_packet(struct packetInfo *pkts)
 {
@@ -228,19 +194,19 @@ unsigned short next_packet(struct packetInfo *pkts)
   }
 
   if (safeFRead(pkts->packet, pkts->meta.caplen, SINGLE_OBJECT, traceFile) == 0)
-    return FALSE;
+    return TRUE;
 
   if(pkts->meta.caplen < sizeof(struct ether_header))
-    return FALSE;
+    return TRUE;
 
   pkts->ethh = (struct ether_header *)pkts->packet;
   pkts->ethh->ether_type = ntohs(pkts->ethh->ether_type);
 
   if(pkts->meta.caplen == sizeof(struct ether_header))
-    return FALSE;
+    return TRUE;
 
   if(pkts->ethh->ether_type != DECIMAL_IP)
-    return FALSE;
+    return TRUE;
 
 
   pkts->ipheader = (struct iphdr *)(pkts->packet + sizeof(struct ether_header));
@@ -249,7 +215,7 @@ unsigned short next_packet(struct packetInfo *pkts)
   if(pkts->meta.caplen < sizeof(struct ether_header) + pkts->ip_hdr_len)
   {
     pkts->ipheader = NULL;
-    return FALSE;
+    return TRUE;
   }
 
   pkts->ipheader->tot_len = ntohs(pkts->ipheader->tot_len);
@@ -286,7 +252,7 @@ unsigned short next_packet(struct packetInfo *pkts)
 
   }
 
-  return FALSE;
+  return TRUE;
 }
 
 int next_usable_packet(struct packetInfo *pkts)
@@ -295,12 +261,16 @@ int next_usable_packet(struct packetInfo *pkts)
   {
     if (pkts->ethh == NULL)
       continue;
-    if (ntohs(pkts->ethh->ether_type) != DECIMAL_IP)
+
+    if (pkts->ethh->ether_type != DECIMAL_IP)
       continue;
+
     if (pkts->ipheader == NULL)
       continue;
-    if (pkts->ipheader->protocol != DECIMAL_UDP || pkts->ipheader->protocol != DECIMAL_TCP)
+
+    if (pkts->ipheader->protocol != DECIMAL_UDP && pkts->ipheader->protocol != DECIMAL_TCP)
       continue;
+
     if (pkts->tcpheader == NULL && pkts->udpheader == NULL)
       continue;
 
@@ -308,7 +278,6 @@ int next_usable_packet(struct packetInfo *pkts)
   }
   return FALSE;
 }
-
 
 int transportPacketDumping()
 {
@@ -323,7 +292,7 @@ int transportPacketDumping()
       printf("%u ", ntohs(packet.tcpheader->th_sport));
       createIP(ntohl(packet.ipheader->daddr));
       printf("%u ", ntohs(packet.tcpheader->th_dport));
-      int payload = ntohs(packet.ipheader->tot_len) - packet.ip_hdr_len - packet.tcp_hdr_len;
+      int payload = packet.ipheader->tot_len - packet.ip_hdr_len - packet.tcp_hdr_len;
       printf("T %u %u %u\n", payload, ntohl(packet.tcpheader->th_seq), ntohl(packet.tcpheader->th_ack));
     }
 
