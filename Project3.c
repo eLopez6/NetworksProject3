@@ -30,6 +30,9 @@
 #define SECOND_OCTET 16
 #define THIRD_OCTET 8
 #define COPY_MASK 0xFF
+#define ORIGINATOR 0
+#define RESPONDER 1
+#define ENDPOINT_MEMBERS 2
 
 #define MAX_ETH_PKT 1518
 #define ETHERNET_HEADER_LENGTH 14
@@ -41,6 +44,11 @@
 #define DECIMAL_IP 2048
 #define DECIMAL_TCP 6
 #define DECIMAL_UDP 17
+#define CONNECTION_START_TS 0
+
+#define TABLE_SIZE 47717
+#define ARBITRARY_SHIFT 16
+#define ARBITRARY_HASH 0x45D9F3B
 
 struct metaInfo {
   unsigned int seconds, microseconds;
@@ -56,21 +64,50 @@ struct packetInfo {
   struct udphdr *udpheader;
   unsigned short ip_hdr_len;
   unsigned short tcp_hdr_len;
+  unsigned int payload;
   double ts;
 };
 
+// struct endpointNode {
+//   double start_ts, dur;
+//   unsigned int orig_ip, resp_ip;
+//   unsigned int o_to_r_pkts, o_to_r_app_bytes;
+//   unsigned short orig_port, resp_port, proto;
+//   struct endpointNode *next;
+// };
+
+struct connectionNode{
+  double start_ts, current_ts;
+  unsigned short protocol;
+  unsigned int endpoint_ips[ENDPOINT_MEMBERS];
+  unsigned int endpoint_pkts[ENDPOINT_MEMBERS];
+  unsigned int endpoint_bytes[ENDPOINT_MEMBERS];
+  unsigned short endpoint_ports[ENDPOINT_MEMBERS];
+  struct connectionNode *next;
+};
+
+
 static FILE *traceFile;
 static char *traceFilePath;
+static struct connectionNode *connectionTable[sizeof(struct connectionNode *) * TABLE_SIZE];
 
 void *zmalloc(unsigned int size);
 void createIP(unsigned int ip);
+struct connectionNode *lookup(struct packetInfo packet);
+void insertNode(struct connectionNode *nodePointer, struct packetInfo packet);
+void updateNode(struct connectionNode *nodePointer, struct packetInfo packet);
 int transportPacketDumping();
+int printConnectionSummaries();
 
 int main(int argc, char *argv[])
 {
   int optionCount = 0;
   int option;
   short rflag, pflag, sflag, tflag;
+  rflag = FALSE;
+  pflag = FALSE;
+  sflag = FALSE;
+  tflag = FALSE;
 
   while ((option = getopt(argc, argv, "r:pst ")) != -1)
   {
@@ -136,7 +173,7 @@ int main(int argc, char *argv[])
     transportPacketDumping();
 
   if (sflag)
-    ;
+    printConnectionSummaries();
 
   if (tflag)
     ;
@@ -224,11 +261,12 @@ unsigned short next_packet(struct packetInfo *pkts)
   {
     pkts->udpheader = (struct udphdr *)(pkts->packet + sizeof(struct ether_header) + pkts->ip_hdr_len);
     pkts->tcp_hdr_len = 0;
-    if (pkts->meta.caplen < (sizeof(struct ether_header) + sizeof(struct iphdr) +UDP_HEADER_LENGTH))
+    if (pkts->meta.caplen < (sizeof(struct ether_header) + sizeof(struct iphdr) + UDP_HEADER_LENGTH))
     {
       pkts->udpheader = NULL;
       return TRUE;
     }
+    pkts->payload = ntohs(pkts->udpheader->uh_ulen) - UDP_HEADER_LENGTH;
 
   }
 
@@ -249,6 +287,7 @@ unsigned short next_packet(struct packetInfo *pkts)
       pkts->tcpheader = NULL;
       return TRUE;
     }
+    pkts->payload = pkts->ipheader->tot_len - pkts->ip_hdr_len - pkts->tcp_hdr_len;
 
   }
 
@@ -292,8 +331,8 @@ int transportPacketDumping()
       printf("%u ", ntohs(packet.tcpheader->th_sport));
       createIP(ntohl(packet.ipheader->daddr));
       printf("%u ", ntohs(packet.tcpheader->th_dport));
-      int payload = packet.ipheader->tot_len - packet.ip_hdr_len - packet.tcp_hdr_len;
-      printf("T %u %u %u\n", payload, ntohl(packet.tcpheader->th_seq), ntohl(packet.tcpheader->th_ack));
+
+      printf("T %u %u %u\n", packet.payload, ntohl(packet.tcpheader->th_seq), ntohl(packet.tcpheader->th_ack));
     }
 
     if (packet.udpheader != NULL)
@@ -302,7 +341,7 @@ int transportPacketDumping()
       printf("%u ", ntohs(packet.udpheader->uh_sport));
       createIP(ntohl(packet.ipheader->daddr));
       printf("%u ", ntohs(packet.udpheader->uh_dport));
-      printf("U %u\n", ntohs(packet.udpheader->uh_ulen) - UDP_HEADER_LENGTH);
+      printf("U %u\n", packet.payload);
     }
   }
 
@@ -327,5 +366,199 @@ void createIP(unsigned int ip)
     else
       printf(" ");
   }
+
+}
+
+
+int populateConnectionTable()
+{
+    struct packetInfo packet;
+    struct connectionNode *nodepointer;
+
+    while (next_usable_packet(&packet))
+    {
+      if ((nodepointer = lookup(packet)) == NULL)
+        insertNode(nodepointer, packet);
+      else
+        updateNode(nodepointer, packet);
+    }
+    return TRUE;
+}
+
+int printConnection(struct connectionNode *connection)
+{
+  // printf("print connection is ran");
+  printf("%0.6f %0.6f ", connection->start_ts, (connection->current_ts - connection->start_ts));
+  // printf("%u %u ", connection->endpoint_ips[ORIGINATOR], connection->endpoint_ports[ORIGINATOR]);
+  createIP(ntohl(connection->endpoint_ips[ORIGINATOR]));
+  printf("%u ", ntohs(connection->endpoint_ports[ORIGINATOR]));
+  createIP(ntohl(connection->endpoint_ips[RESPONDER]));
+  printf("%u ", ntohs(connection->endpoint_ports[RESPONDER]));
+  // printf("%u %u ", connection->endpoint_ips[RESPONDER], connection->endpoint_ports[RESPONDER]);
+
+  if (connection->protocol == DECIMAL_UDP)
+    printf("U ");
+  else
+    printf("T ");
+
+  printf("%u %u ", connection->endpoint_pkts[ORIGINATOR], connection->endpoint_bytes[ORIGINATOR]);
+
+  if (connection->endpoint_pkts[RESPONDER] != NO_BYTES)
+  {
+    printf("%u %u\n", connection->endpoint_pkts[RESPONDER], connection->endpoint_bytes[RESPONDER]);
+    return TRUE;
+  }
+  else
+  {
+    printf("? ?\n");
+    return TRUE;
+  }
+
+}
+
+int printConnectionSummaries()
+{
+  struct connectionNode *printPointer;
+  // struct connectionNode *freePointer;
+
+  populateConnectionTable();
+
+  for (int i = 0; i < TABLE_SIZE; i++)
+    if (connectionTable[i] != NULL)
+      for (printPointer = connectionTable[i]; printPointer != NULL; printPointer = printPointer->next)
+      {
+        // free(freePointer);   // Frees the last printed connection
+        // freePointer = printPointer;
+        printConnection(printPointer);
+      }
+
+  return TRUE;
+}
+
+
+// ############    HASHTABLE OPERATIONS     ############
+
+unsigned int hash(struct packetInfo packet)
+{
+  unsigned int key, addressSum;
+
+  addressSum = packet.ipheader->daddr + packet.ipheader->saddr + packet.ipheader->protocol;
+
+  if (packet.ipheader->protocol == DECIMAL_UDP)
+    addressSum += (packet.udpheader->uh_sport + packet.udpheader->uh_dport);
+  else
+    addressSum += (packet.tcpheader->th_sport + packet.tcpheader->th_dport);
+
+  key = ((addressSum >> ARBITRARY_SHIFT) ^ addressSum) * ARBITRARY_HASH;
+  return key % TABLE_SIZE;
+}
+
+struct connectionNode *lookup(struct packetInfo packet)
+{
+  struct connectionNode *nodepointer;
+
+  for (nodepointer = connectionTable[hash(packet)]; nodepointer != NULL; nodepointer = nodepointer->next)
+  {
+    if (packet.ipheader->saddr == nodepointer->endpoint_ips[ORIGINATOR])
+    {
+      if (packet.ipheader->protocol == nodepointer->protocol)
+        switch (nodepointer->protocol)
+        {
+          case DECIMAL_UDP:
+            if (packet.udpheader->uh_sport == nodepointer->endpoint_ports[ORIGINATOR])
+              return nodepointer;
+            // else
+            //   return NULL;
+            break;
+          case DECIMAL_TCP:
+            if (packet.tcpheader->th_sport == nodepointer->endpoint_ports[ORIGINATOR])
+              return nodepointer;
+            // else
+            //   return NULL;
+            break;
+        }
+
+    }
+    else if (packet.ipheader->saddr == nodepointer->endpoint_ips[RESPONDER])
+    {
+      if (packet.ipheader->protocol == nodepointer->protocol)
+        switch (nodepointer->protocol)
+        {
+          case DECIMAL_UDP:
+            if (packet.udpheader->uh_dport == nodepointer->endpoint_ports[RESPONDER])
+              return nodepointer;
+            // else
+            //   return NULL;
+            break;
+          case DECIMAL_TCP:
+            if (packet.tcpheader->th_dport == nodepointer->endpoint_ports[RESPONDER])
+              return nodepointer;
+            // else
+            //   return NULL;
+            break;
+        }
+    }
+
+  }
+
+  return NULL;
+}
+
+struct connectionNode *createNode(struct packetInfo packet)
+{
+  struct connectionNode *newNode = (struct connectionNode *)zmalloc(sizeof(struct connectionNode *));
+
+  newNode->start_ts = packet.ts;
+  newNode->current_ts = newNode->start_ts;
+  newNode->protocol = packet.ipheader->protocol;
+
+  newNode->endpoint_ips[ORIGINATOR] = packet.ipheader->saddr;
+  newNode->endpoint_ips[RESPONDER] = packet.ipheader->daddr;
+
+  if (newNode->protocol == DECIMAL_TCP)
+  {
+    newNode->endpoint_ports[ORIGINATOR] = packet.tcpheader->th_sport;
+    newNode->endpoint_ports[RESPONDER] = packet.tcpheader->th_dport;
+  }
+  else
+  {
+    newNode->endpoint_ports[ORIGINATOR] = packet.udpheader->uh_sport;
+    newNode->endpoint_ports[RESPONDER] = packet.udpheader->uh_dport;
+  }
+
+  newNode->endpoint_pkts[ORIGINATOR] = 1;
+
+  newNode->endpoint_bytes[ORIGINATOR] = packet.payload;
+
+  newNode->next = NULL;
+
+  return newNode;
+}
+
+void insertNode(struct connectionNode *nodePointer, struct packetInfo packet)
+{
+  if (nodePointer == NULL)
+    connectionTable[hash(packet)] = createNode(packet);
+
+  else
+    nodePointer->next = createNode(packet);
+
+}
+
+void updateNode(struct connectionNode *nodePointer, struct packetInfo packet)
+{
+
+  if (packet.ipheader->saddr == nodePointer->endpoint_ips[ORIGINATOR])
+  {
+    nodePointer->endpoint_pkts[ORIGINATOR]++;
+    nodePointer->endpoint_bytes[ORIGINATOR] += packet.payload;
+  }
+  else
+  {
+    nodePointer->endpoint_pkts[RESPONDER]++;
+    nodePointer->endpoint_bytes[RESPONDER] += packet.payload;
+  }
+
+  nodePointer->current_ts = packet.ts;
 
 }
