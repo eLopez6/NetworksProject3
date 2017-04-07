@@ -75,6 +75,14 @@ struct connectionNode{
   unsigned int endpoint_pkts[ENDPOINT_MEMBERS];
   unsigned int endpoint_bytes[ENDPOINT_MEMBERS];
   unsigned short endpoint_ports[ENDPOINT_MEMBERS];
+
+  // Used only in calculating RTT of TCP packets
+  unsigned int endpoint_seq[ENDPOINT_MEMBERS];
+  char seqSet[ENDPOINT_MEMBERS];  // will equal 0 FALSE or 1 TRUE
+  char rttCalculated[ENDPOINT_MEMBERS]; // will equal 0 FALSE or 1 TRUE
+  double firstTimestamp[ENDPOINT_MEMBERS];
+  double lastTimestamp[ENDPOINT_MEMBERS];
+
   struct connectionNode *next;
 };
 
@@ -89,9 +97,13 @@ struct connectionNode *lookup(struct packetInfo packet);
 void setUpTable();
 void addPacket(struct packetInfo packet);
 void insertNode(struct packetInfo packet);
-void updateNode(struct connectionNode *nodePointer, struct packetInfo packet);
+int checkAck(struct connectionNode *nodepointer, struct packetInfo packet);
+int updateSeq(struct connectionNode *nodepointer, struct packetInfo packet);
+void calculateRTT(struct connectionNode *nodepointer, struct packetInfo packet);
+void updateNode(struct connectionNode *nodepointer, struct packetInfo packet);
 int transportPacketDumping();
 int printConnectionSummaries();
+int calculateRoundTripTimes();
 
 int main(int argc, char *argv[])
 {
@@ -170,7 +182,7 @@ int main(int argc, char *argv[])
     printConnectionSummaries();
 
   if (tflag)
-    ;
+    calculateRoundTripTimes();
 
 
   return TRUE;
@@ -310,6 +322,30 @@ int next_usable_packet(struct packetInfo *pkts)
   return FALSE;
 }
 
+int next_usable_packet_tcp(struct packetInfo *pkts)
+{
+  while (next_packet(pkts))
+  {
+    if (pkts->ethh == NULL)
+      continue;
+
+    if (pkts->ethh->ether_type != DECIMAL_IP)
+      continue;
+
+    if (pkts->ipheader == NULL)
+      continue;
+
+    if (pkts->ipheader->protocol != DECIMAL_TCP)
+      continue;
+
+    if (pkts->tcpheader == NULL)
+      continue;
+
+    return TRUE;
+  }
+  return FALSE;
+}
+
 int transportPacketDumping()
 {
   struct packetInfo packet;
@@ -361,15 +397,23 @@ void createIP(unsigned int ip)
 
 }
 
-
 int populateConnectionTable()
 {
-    struct packetInfo packet;
+  struct packetInfo packet;
 
-    while (next_usable_packet(&packet))
-      addPacket(packet);
+  while (next_usable_packet(&packet))
+    addPacket(packet);
 
-    return TRUE;
+  return TRUE;
+}
+
+int populateTCPTable()
+{
+  struct packetInfo packet;
+  while (next_usable_packet_tcp(&packet))
+    addPacket(packet);
+
+  return TRUE;
 }
 
 int depopulateTable()
@@ -388,6 +432,7 @@ int depopulateTable()
         nodepointer = nodepointer->next;
         free(clearpointer);
       }
+      free(nodepointer);
     }
   }
   return TRUE;
@@ -441,10 +486,57 @@ int printConnectionSummaries()
       }
     }
   depopulateTable();
-  
+
   return TRUE;
 }
 
+void printRTT(struct connectionNode * connection)
+{
+  createIP(connection->endpoint_ips[ORIGINATOR]);
+  printf("%u ", connection->endpoint_ports[ORIGINATOR]);
+  createIP(connection->endpoint_ips[RESPONDER]);
+  printf("%u ", connection->endpoint_ports[RESPONDER]);
+
+  printf("%u ", connection->endpoint_seq[RESPONDER]);
+
+  if (connection->rttCalculated[ORIGINATOR])
+    printf("%0.6f ", connection->lastTimestamp[ORIGINATOR] - connection->firstTimestamp[ORIGINATOR]);
+  // else if (connection->seqSet[ORIGINATOR])
+  //   printf("? ");
+  // else
+  //   printf("- ");
+
+  if (connection->rttCalculated[RESPONDER])
+    printf("%0.6f", connection->lastTimestamp[RESPONDER] - connection->firstTimestamp[RESPONDER]);
+  // else if (connection->seqSet[RESPONDER])
+  //   printf("?");
+  // else
+  //   printf("-");
+
+  printf("\n");
+}
+
+int calculateRoundTripTimes()
+{
+  int i;
+  struct connectionNode *printPointer;
+
+  populateTCPTable();
+
+  for (i = 0; i < TABLE_SIZE; i++)
+    if (connectionTable[i] != NULL)
+    {
+      printPointer = connectionTable[i];
+      while (printPointer != NULL)
+      {
+        printRTT(printPointer);
+        printPointer = printPointer->next;
+      }
+    }
+  depopulateTable();
+
+  return TRUE;
+}
 
 // ############    HASHTABLE OPERATIONS     ############
 
@@ -465,7 +557,7 @@ unsigned int hash(struct packetInfo packet)
 
 struct connectionNode *lookup(struct packetInfo packet)
 {
-  struct connectionNode *nodepointer; // = (struct connectionNode *)zmalloc(sizeof(struct connectionNode));
+  struct connectionNode *nodepointer;
 
   for (nodepointer = connectionTable[hash(packet)]; nodepointer != NULL; nodepointer = nodepointer->next)
   {
@@ -528,6 +620,14 @@ struct connectionNode *createNode(struct packetInfo packet)
   {
     newNode->endpoint_ports[ORIGINATOR] = ntohs(packet.tcpheader->th_sport);
     newNode->endpoint_ports[RESPONDER] = ntohs(packet.tcpheader->th_dport);
+
+    // creating new node for connection with payload (ALLMAN)
+
+    if (packet.payload != 0)
+    {
+      newNode->endpoint_seq[ORIGINATOR] = ntohl(packet.tcpheader->th_seq);
+      newNode->firstTimestamp[ORIGINATOR] = packet.ts;
+    }
   }
   else
   {
@@ -569,19 +669,99 @@ void insertNode(struct packetInfo packet)
   }
 }
 
-void updateNode(struct connectionNode *nodePointer, struct packetInfo packet)
+void updateNode(struct connectionNode *nodepointer, struct packetInfo packet)
 {
-  if (ntohl(packet.ipheader->saddr) == nodePointer->endpoint_ips[ORIGINATOR])
+  if (ntohl(packet.ipheader->saddr) == nodepointer->endpoint_ips[ORIGINATOR])
   {
-    nodePointer->endpoint_pkts[ORIGINATOR]++;
-    nodePointer->endpoint_bytes[ORIGINATOR] += packet.payload;
+    nodepointer->endpoint_pkts[ORIGINATOR]++;
+    nodepointer->endpoint_bytes[ORIGINATOR] += packet.payload;
   }
   else
   {
-    nodePointer->endpoint_pkts[RESPONDER]++;
-    nodePointer->endpoint_bytes[RESPONDER] += packet.payload;
+    nodepointer->endpoint_pkts[RESPONDER]++;
+    nodepointer->endpoint_bytes[RESPONDER] += packet.payload;
   }
 
-  nodePointer->current_ts = packet.ts;
+  if (packet.ipheader->protocol == DECIMAL_TCP)
+  {
+    updateSeq(nodepointer, packet);
+    if (checkAck(nodepointer, packet))
+    {
+      calculateRTT(nodepointer, packet);
+    }
 
+  }
+
+  nodepointer->current_ts = packet.ts;
+
+}
+
+int updateSeq(struct connectionNode *nodepointer, struct packetInfo packet)
+{
+  if (packet.payload > 0)
+  {
+    if (ntohl(packet.ipheader->saddr) == nodepointer->endpoint_ips[ORIGINATOR])
+    {
+      if (!(nodepointer->seqSet[ORIGINATOR]))
+      {
+        nodepointer->firstTimestamp[ORIGINATOR] = packet.ts;
+        nodepointer->endpoint_seq[ORIGINATOR] = ntohl(packet.tcpheader->th_seq);
+        nodepointer->seqSet[ORIGINATOR] = TRUE;
+        return TRUE;
+      }
+    }
+    else if (ntohl(packet.ipheader->saddr) == nodepointer->endpoint_ips[RESPONDER])
+    {
+      if (!(nodepointer->seqSet[RESPONDER]))
+      {
+        nodepointer->firstTimestamp[RESPONDER] = packet.ts;
+        nodepointer->endpoint_seq[RESPONDER] = ntohl(packet.tcpheader->th_seq);
+        nodepointer->seqSet[RESPONDER] = TRUE;
+        return TRUE;
+      }
+    }
+  }
+  return FALSE;
+}
+
+int checkAck(struct connectionNode *nodepointer, struct packetInfo packet)
+{
+  if (ntohl(packet.ipheader->saddr) == nodepointer->endpoint_ips[RESPONDER] &&
+  ntohl(packet.ipheader->daddr) == nodepointer->endpoint_ips[ORIGINATOR])
+  {
+    if (nodepointer->seqSet[ORIGINATOR])
+      if (ntohl(packet.tcpheader->th_ack) > nodepointer->endpoint_seq[ORIGINATOR])
+        return TRUE;
+  }
+  else if (ntohl(packet.ipheader->saddr) == nodepointer->endpoint_ips[ORIGINATOR] &&
+  ntohl(packet.ipheader->daddr) == nodepointer->endpoint_ips[RESPONDER])
+  {
+    if (nodepointer->seqSet[RESPONDER])
+      if (ntohl(packet.tcpheader->th_ack) > nodepointer->endpoint_seq[RESPONDER])
+        return TRUE;
+  }
+
+  return FALSE;
+}
+
+
+void calculateRTT(struct connectionNode *nodepointer, struct packetInfo packet)
+{
+  if (!(nodepointer->rttCalculated[ORIGINATOR]))
+  {
+    // verifies that the packet is from the responder endpoint
+    if (nodepointer->endpoint_ips[ORIGINATOR] == ntohl(packet.ipheader->daddr))
+    {
+      nodepointer->rttCalculated[ORIGINATOR] = TRUE;
+      nodepointer->lastTimestamp[ORIGINATOR] = packet.ts;
+    }
+  }
+  else if (!(nodepointer->rttCalculated[RESPONDER]))
+  {
+    if (nodepointer->endpoint_ips[RESPONDER] == ntohl(packet.ipheader->saddr))
+    {
+      nodepointer->rttCalculated[RESPONDER] = TRUE;
+      nodepointer->lastTimestamp[RESPONDER] = packet.ts;
+    }
+  }
 }
