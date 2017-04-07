@@ -15,7 +15,7 @@
 #include <netinet/ip.h>
 
 
-#define ALLOWED_OPTIONS 1
+#define ALLOWED_OPTIONS 2
 #define TRUE 1
 #define FALSE 0
 #define NO_BYTES 0
@@ -129,6 +129,7 @@ int main(int argc, char *argv[])
         else
         {
           rflag = TRUE;
+          optionCount++;
           break;
         }
 
@@ -147,6 +148,10 @@ int main(int argc, char *argv[])
         optionCount++;
         break;
 
+      case ' ':
+        perror("No mode option input, exiting");
+        break;
+
       default:
         perror("Invalid command line argument");
         exit(EXIT_FAILURE);
@@ -156,6 +161,12 @@ int main(int argc, char *argv[])
   if (optionCount > ALLOWED_OPTIONS)
   {
     perror("Only 1 command option is allowed");
+    exit(EXIT_FAILURE);
+  }
+
+  if (optionCount < ALLOWED_OPTIONS)
+  {
+    perror("Insufficient number of mode options");
     exit(EXIT_FAILURE);
   }
 
