@@ -497,21 +497,19 @@ void printRTT(struct connectionNode * connection)
   createIP(connection->endpoint_ips[RESPONDER]);
   printf("%u ", connection->endpoint_ports[RESPONDER]);
 
-  printf("%u ", connection->endpoint_seq[RESPONDER]);
-
   if (connection->rttCalculated[ORIGINATOR])
     printf("%0.6f ", connection->lastTimestamp[ORIGINATOR] - connection->firstTimestamp[ORIGINATOR]);
-  // else if (connection->seqSet[ORIGINATOR])
-  //   printf("? ");
-  // else
-  //   printf("- ");
+  else if (connection->seqSet[ORIGINATOR])
+    printf("? ");
+  else
+    printf("- ");
 
   if (connection->rttCalculated[RESPONDER])
     printf("%0.6f", connection->lastTimestamp[RESPONDER] - connection->firstTimestamp[RESPONDER]);
-  // else if (connection->seqSet[RESPONDER])
-  //   printf("?");
-  // else
-  //   printf("-");
+  else if (connection->seqSet[RESPONDER])
+    printf("?");
+  else
+    printf("-");
 
   printf("\n");
 }
@@ -691,9 +689,7 @@ void updateNode(struct connectionNode *nodepointer, struct packetInfo packet)
     }
 
   }
-
   nodepointer->current_ts = packet.ts;
-
 }
 
 int updateSeq(struct connectionNode *nodepointer, struct packetInfo packet)
@@ -750,7 +746,8 @@ void calculateRTT(struct connectionNode *nodepointer, struct packetInfo packet)
   if (!(nodepointer->rttCalculated[ORIGINATOR]))
   {
     // verifies that the packet is from the responder endpoint
-    if (nodepointer->endpoint_ips[ORIGINATOR] == ntohl(packet.ipheader->daddr))
+    // if (nodepointer->endpoint_ips[ORIGINATOR] == ntohl(packet.ipheader->daddr))
+    if (ntohl(packet.ipheader->saddr) == nodepointer->endpoint_ips[RESPONDER])
     {
       nodepointer->rttCalculated[ORIGINATOR] = TRUE;
       nodepointer->lastTimestamp[ORIGINATOR] = packet.ts;
@@ -758,7 +755,8 @@ void calculateRTT(struct connectionNode *nodepointer, struct packetInfo packet)
   }
   else if (!(nodepointer->rttCalculated[RESPONDER]))
   {
-    if (nodepointer->endpoint_ips[RESPONDER] == ntohl(packet.ipheader->saddr))
+    // if (nodepointer->endpoint_ips[RESPONDER] == ntohl(packet.ipheader->saddr))
+    if (ntohl(packet.ipheader->saddr) == nodepointer->endpoint_ips[ORIGINATOR])
     {
       nodepointer->rttCalculated[RESPONDER] = TRUE;
       nodepointer->lastTimestamp[RESPONDER] = packet.ts;
