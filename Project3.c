@@ -1,7 +1,13 @@
-// Emilio Lopez, eil11
+// Emilio Lopez
+// eil11
 // Project3.c
 // Date Created: 3/10/2017
 // Code for the entire Project 3
+
+// This program relies on a single, static hash table for parts -s and
+// -t. It has a large starting size of almost 50k, but it means that the load
+// favot for the hash table is small, keeping the time complexity of lookup
+// and insert at about O(1).
 
 
 #include <fcntl.h>
